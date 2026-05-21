@@ -220,9 +220,12 @@
     <button class="btn-sync" style="background:var(--surface2);color:var(--muted);border:1px solid var(--border)" onclick="clearCacheAndSync()">✕ Clear & resync</button>
   </div>
   <div class="sheets-status" id="sheetsStatus"></div>
+  <div class="sheets-input-row" style="padding-top:0">
+    <input class="sheets-url" id="sheetsAdsUrl" placeholder="Ads sheet URL: ...pub?gid=XXXXXXXX&single=true&output=csv (optional)" oninput="saveSheetsUrl()">
+  </div>
   <div class="sheets-hint">
-    How to get URL: Google Sheets → <b>File → Share → Publish to web</b> → select sheet → <b>CSV</b> → Publish → copy link<br>
-    Sheet columns: <b>week · concept · spend · pcac · ctr · pltv_pcac · pnetworth_1y · ad_count</b> (or use Tableau export format)
+    Main sheet: concepts aggregated per week · Ads sheet: individual creatives for Top 10<br>
+    Publish both: <b>File → Share → Publish to web</b> → select each sheet → <b>CSV</b> → copy URL
   </div>
 </div>
 
@@ -443,6 +446,7 @@ function parseFile(text) {
   const iRat  = find('pLTV / pCAC 1Y','pltv / pcac 1y','pltv/pcac','ratio','pltv_pcac');
   const iNet  = find('pNetWorth 1Y','pnetworth 1y','pnetworth','networth','net_worth');
   const iPLTV = find('pLTV 1Y','pltv 1y','pltv1y','pltv');
+  const iAds  = find('ad_count','ads','ad count');
   const iPck  = find('pack_count','packs');
   const iPur  = find('purchases','ppaid','pPaid');
 
@@ -465,6 +469,7 @@ function parseFile(text) {
       pltv:  iPLTV!==-1 ? pMoney(c[iPLTV]) : null,
       packs: iPck!==-1 ? pNum(c[iPck]) : null,
       purch: iPur!==-1 ? pNum(c[iPur]) : null,
+      adCount: iAds!==-1 ? pNum(c[iAds]) : null,
     });
   }
   if(!raw.length) return [];
@@ -515,16 +520,19 @@ function parseFile(text) {
     const wRatio = (avgPLTV!=null && blendCAC!=null && blendCAC>0)
       ? avgPLTV/blendCAC
       : null;
+    // If pre-aggregated (Sheet format): use direct values from first row
+    const isPreAgg = rows.length === 1 && rows[0].adCount != null;
+    const firstRow = rows[0];
     return {
       id: Date.now()+Math.random(),
       concept: name,
-      week: rows[0]?.week || '__pending__',
+      week: firstRow?.week || '__pending__',
       spend:    Math.round(totalSpend),
-      ctr:      wCTR!=null ? Math.round(wCTR*100)/100 : null,
-      cpa:      blendCAC!=null ? Math.round(blendCAC*10)/10 : null,
-      ratio:    wRatio!=null ? Math.round(wRatio*100)/100 : null,
+      ctr:      isPreAgg ? (firstRow.ctr || null) : (wCTR!=null ? Math.round(wCTR*100)/100 : null),
+      cpa:      isPreAgg ? (firstRow.cpa || null) : (blendCAC!=null ? Math.round(blendCAC*10)/10 : null),
+      ratio:    isPreAgg ? (firstRow.ratio || null) : (wRatio!=null ? Math.round(wRatio*100)/100 : null),
       networth: Math.round(totalNW),
-      ads:      rows.length,
+      ads:      isPreAgg ? (firstRow.adCount || rows.length) : rows.length,
       packs:    totalPacks>0 ? totalPacks : null,
       purchases:totalPurch>0 ? Math.round(totalPurch) : null,
     };
@@ -857,10 +865,14 @@ function renderGTCreatives() {
 // ── GOOGLE SHEETS SYNC ───────────────────────────────────────────────────────
 const SHEETS_URL_KEY = 'concept_sheets_url';
 const SHEETS_DATA_KEY = 'concept_sheets_data_v1';
+const SHEETS_ADS_URL_KEY = 'concept_sheets_ads_url';
+const SHEETS_ADS_DATA_KEY = 'concept_sheets_ads_v1';
 
 function saveSheetsUrl() {
   const url = document.getElementById('sheetsUrl').value.trim();
   if (url) localStorage.setItem(SHEETS_URL_KEY, url);
+  const adsUrl = document.getElementById('sheetsAdsUrl')?.value.trim();
+  if (adsUrl) localStorage.setItem(SHEETS_ADS_URL_KEY, adsUrl);
 }
 
 function sheetsStatus(msg, type) {
@@ -924,11 +936,68 @@ async function syncSheets() {
     document.getElementById('sheetsBar').classList.remove('error');
     sheetsStatus('✓ Synced ' + loaded.length + ' entries across ' + sheetWeeks.length + ' week(s) · ' + new Date().toLocaleTimeString(), 'ok');
     activeWeek = null; renderAll();
+
+    // Also sync ads sheet if URL provided
+    const adsUrl = document.getElementById('sheetsAdsUrl')?.value.trim() || localStorage.getItem(SHEETS_ADS_URL_KEY);
+    if (adsUrl) await syncAdsSheet(adsUrl);
+
   } catch(e) {
     sheetsStatus('Parse error: ' + e.message, 'err');
     document.getElementById('sheetsBar').classList.add('error');
   }
   btn.disabled = false; btn.textContent = '↻ Sync now';
+}
+
+async function syncAdsSheet(url) {
+  const proxies = [
+    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  ];
+  let text = null;
+  for (const makeProxy of proxies) {
+    try {
+      const res = await fetch(makeProxy(url), { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const t = await res.text();
+      if (!t || t.length < 20 || t.trim().startsWith('<')) continue;
+      text = t; break;
+    } catch(e) { continue; }
+  }
+  if (!text) return;
+
+  const lines = text.split(/?\n/).filter(Boolean);
+  if (lines.length < 2) return;
+  const hdrs = parseCSVLine(lines[0], ',').map(h => h.toLowerCase());
+  const iWeek = hdrs.indexOf('week');
+  const iConc = hdrs.indexOf('concept');
+  const iAd   = hdrs.indexOf('ad_name');
+  const iSpend = hdrs.indexOf('spend');
+  const iPcac  = hdrs.indexOf('pcac');
+  const iCtr   = hdrs.indexOf('ctr');
+  const iRatio = hdrs.indexOf('pltv_pcac');
+  const iNw    = hdrs.indexOf('pnetworth_1y');
+  const iPurch = hdrs.indexOf('purchases');
+  if (iConc === -1 || iSpend === -1) return;
+
+  const ads = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = parseCSVLine(lines[i], ',');
+    if (!c[iConc]) continue;
+    ads.push({
+      week:    iWeek  !== -1 ? c[iWeek]?.trim()  : null,
+      concept: c[iConc]?.trim(),
+      name:    iAd    !== -1 ? c[iAd]?.trim()    : c[iConc]?.trim(),
+      spend:   parseFloat(c[iSpend]) || 0,
+      cpa:     iPcac  !== -1 ? parseFloat(c[iPcac])  || null : null,
+      ctr:     iCtr   !== -1 ? parseFloat(c[iCtr])   || null : null,
+      ratio:   iRatio !== -1 ? parseFloat(c[iRatio]) || null : null,
+      nw:      iNw    !== -1 ? parseFloat(c[iNw])    || 0    : 0,
+      purch:   iPurch !== -1 ? parseFloat(c[iPurch]) || 0    : 0,
+    });
+  }
+  rawCreatives = ads;
+  localStorage.setItem(SHEETS_ADS_DATA_KEY, JSON.stringify({ads, fetchedAt: Date.now(), url}));
+  sheetsStatus('✓ Synced ' + loaded.length + ' concepts + ' + ads.length + ' creatives · ' + new Date().toLocaleTimeString(), 'ok');
 }
 
 function clearCacheAndSync() {
@@ -1022,6 +1091,18 @@ document.getElementById('ov').addEventListener('click',e=>{if(e.target===documen
 
   // Try loading cached sheets data first
   const hasCacheData = loadSheetsCache();
+  // Load ads cache
+  try {
+    const adsCache = localStorage.getItem(SHEETS_ADS_DATA_KEY);
+    if (adsCache) {
+      const adsData = JSON.parse(adsCache);
+      if (adsData.ads) rawCreatives = adsData.ads;
+      if (adsData.url) { const el = document.getElementById('sheetsAdsUrl'); if(el) el.value = adsData.url; }
+    }
+  } catch(e) {}
+  // Restore ads URL
+  const savedAdsUrl = localStorage.getItem(SHEETS_ADS_URL_KEY);
+  if (savedAdsUrl) { const el = document.getElementById('sheetsAdsUrl'); if(el) el.value = savedAdsUrl; }
 
   // Auto-sync if URL saved and checkbox on
   if (savedUrl && document.getElementById('autoRefresh').checked) {
