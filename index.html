@@ -489,7 +489,7 @@ function parseFile(text) {
   // Use normalised key to merge variants (c-rltnshp / c-Rltnshp)
   const groups = {};        // normKey → { displayName, rows[] }
   for(const r of raw){
-    const k = normKey(r.concept);
+    const k = normKey(r.concept) + '|||' + (r.week || '');
     if(!groups[k]) groups[k] = { name: r.concept, rows: [] };
     groups[k].rows.push(r);
   }
