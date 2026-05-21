@@ -399,10 +399,11 @@ function detectDelim(line) {
 
 function parseFile(text) {
   text = text.replace(/^\uFEFF/,'');
-  const lines = text.split('\n').map(l=>l.trimEnd()).filter(Boolean);
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   if(lines.length<2) return null;
   const delim = detectDelim(lines[0]);
-  const hdrs = lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
+  // Parse header properly handling quoted fields and \r
+  const hdrs = lines[0].split(delim).map(h => h.trim().replace(/^"|"$/g,'').replace(/\r/g,'').toLowerCase());
 
   const find = (...aliases) => {
     for(const a of aliases){
@@ -428,13 +429,13 @@ function parseFile(text) {
 
   const raw = [];
   for(let i=1;i<lines.length;i++){
-    const c = lines[i].split(delim).map(x=>x.trim().replace(/^"|"$/g,''));
+    const c = lines[i].split(delim).map(x=>x.trim().replace(/^"|"$/g,'').replace(/\r/g,''));
     const concept = c[iC2];
     if(!concept||concept==='Total'||concept==='Grand Total'||!concept.trim()) continue;
     raw.push({
       concept: concept.trim(),
       level3: iC3!==-1 ? c[iC3] : null,
-      week:  iWeek!==-1 ? c[iWeek]?.trim() : null,
+      week:  iWeek!==-1 ? c[iWeek]?.trim().replace(/\r/g,'') : null,
       spend: pMoney(c[iCost]),
       ctr:   pPct(c[iCTR]),
       cpa:   pMoney(c[iPCAC]),
