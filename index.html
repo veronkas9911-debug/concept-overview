@@ -965,7 +965,7 @@ async function syncAdsSheet(url) {
   }
   if (!text) return;
 
-  const lines = text.split(/?\n/).filter(Boolean);
+  const lines = text.split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return;
   const hdrs = parseCSVLine(lines[0], ',').map(h => h.toLowerCase());
   const iWeek = hdrs.indexOf('week');
@@ -997,7 +997,7 @@ async function syncAdsSheet(url) {
   }
   rawCreatives = ads;
   localStorage.setItem(SHEETS_ADS_DATA_KEY, JSON.stringify({ads, fetchedAt: Date.now(), url}));
-  sheetsStatus('✓ Synced ' + loaded.length + ' concepts + ' + ads.length + ' creatives · ' + new Date().toLocaleTimeString(), 'ok');
+  sheetsStatus('✓ ' + ads.length + ' creatives synced · ' + new Date().toLocaleTimeString(), 'ok');
 }
 
 function clearCacheAndSync() {
