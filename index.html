@@ -397,13 +397,34 @@ function detectDelim(line) {
   return (line.match(/\t/g)||[]).length >= (line.match(/,/g)||[]).length ? '\t' : ',';
 }
 
+// Proper CSV line parser — handles quoted fields with commas inside
+function parseCSVLine(line, delim) {
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i+1] === '"') { cur += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === delim && !inQuotes) {
+      result.push(cur.trim().replace(/\r/g,''));
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur.trim().replace(/\r/g,''));
+  return result;
+}
+
 function parseFile(text) {
   text = text.replace(/^\uFEFF/,'');
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   if(lines.length<2) return null;
   const delim = detectDelim(lines[0]);
   // Parse header properly handling quoted fields and \r
-  const hdrs = lines[0].split(delim).map(h => h.trim().replace(/^"|"$/g,'').replace(/\r/g,'').toLowerCase());
+  const hdrs = parseCSVLine(lines[0], delim).map(h => h.toLowerCase());
 
   const find = (...aliases) => {
     for(const a of aliases){
@@ -429,7 +450,7 @@ function parseFile(text) {
 
   const raw = [];
   for(let i=1;i<lines.length;i++){
-    const c = lines[i].split(delim).map(x=>x.trim().replace(/^"|"$/g,'').replace(/\r/g,''));
+    const c = parseCSVLine(lines[i], delim);
     const concept = c[iC2];
     if(!concept||concept==='Total'||concept==='Grand Total'||!concept.trim()) continue;
     raw.push({
